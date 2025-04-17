@@ -30,6 +30,7 @@ interface SqlFormatter {
   formatStatement: (sql: SqlStatement, meta: SqlFormatterMetadata) => string,
   formatColumn: (columnName: string) => string,
   formatValue: (value: SqlValue, meta: SqlFormatterMetadata) => string,
+  formatNot: (where: SqlWhereClause, meta: SqlFormatterMetadata) => string,
 }
 
 interface SqlFormatterMetadata {
@@ -57,13 +58,16 @@ const formatWhereClause = (where: SqlWhereClause, meta: SqlFormatterMetadata): s
       })
       return parts.join(` ${where[0].toUpperCase()} `)
     }
-    // TODO: Implement
-    case 'not': return `${formatWhereClause(where[1], meta)}`
+
+    case 'not':
+      return meta.formatter.formatNot(where[1], meta)
+
     case '<':
     case '>': {
       const [sign, a, b] = where
       return `${formatValue(a, meta)} ${sign} ${formatValue(b, meta)}`
     }
+
     case '=':
     case '!=': {
       const [operator, ...operands] = where
@@ -81,9 +85,12 @@ const formatWhereClause = (where: SqlWhereClause, meta: SqlFormatterMetadata): s
       const sign = operator === '!=' ? 'NOT IN' : 'IN'
       return `${formatValue(a, meta)} ${sign} (${rest.map(f => formatValue(f, meta)).join(', ')})`
     }
+
     case 'is-empty': return `${formatValue(where[1], meta)} IS NULL`
     case 'not-empty': return `${formatValue(where[1], meta)} IS NOT NULL`
+
     case 'field': return formatValue(where, meta)
+
     case 'macro': {
       const macro = meta.macros[where[1]]
       if (!macro) {
@@ -122,6 +129,9 @@ const defaultFormatter: SqlFormatter = {
     }
     return 'NULL'
   },
+  formatNot: (where, meta) => {
+    return `NOT (${formatWhereClause(where, meta)})`
+  },
 }
 
 const builtInFormatters: Record<string, SqlFormatter> = {
@@ -147,7 +157,9 @@ const builtInFormatters: Record<string, SqlFormatter> = {
   },
 }
 
-export type Result<T, E> = { success: true, error?: undefined, data: T } | { success: false, error: E, data?: T }
+export type Result<T, E> =
+  | { success: true, error?: undefined, data: T }
+  | { success: false, error: E, data?: undefined }
 
 interface SqlTranspilerOptions {
   tableName?: string,

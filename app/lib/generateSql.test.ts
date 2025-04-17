@@ -60,6 +60,20 @@ test('handles the cases from the prompt: https://gist.github.com/perivamsi/1cbea
   })
 })
 
+test('handles NOT', () => {
+  const { generateSql } = createSqlTranspiler({ tableName: 'data' })
+  const result = generateSql('postgres', fields, { 'where': ['not', ['>', ['field', 4], 35]] })
+  expect(result.success).toBe(true)
+  expect(result.data).toBe('SELECT * FROM data WHERE NOT ("age" > 35);')
+})
+
+test('handles invalid fields', () => {
+  const { generateSql } = createSqlTranspiler({ tableName: 'data' })
+  const result = generateSql('postgres', fields, { 'where': ['>', ['field', 999], 35] })
+  expect(result.success).toBe(false)
+  expect(result.error?.message).toBe('Unknown field number: 999')
+})
+
 describe('macros', () => {
   test('supports macros', () => {
     const { generateSql } = createSqlTranspiler({
