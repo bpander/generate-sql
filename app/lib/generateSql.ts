@@ -75,7 +75,7 @@ const formatWhereClause = (where: SqlWhereClause, options: SqlFormatterOptions):
     }
     case 'is-empty': return `${formatValue(where[1], options)} IS NULL`
     case 'not-empty': return `${formatValue(where[1], options)} IS NOT NULL`
-    case 'field': return formatValue(where[1], options)
+    case 'field': return formatValue(where, options)
   }
 }
 
@@ -100,7 +100,7 @@ const defaultFormatter: SqlFormatter = {
       return formatter.formatColumn(columnName)
     }
     if (typeof value === 'string') {
-      return `"${value}"`
+      return `'${value}'`
     }
     if (typeof value === 'number') {
       return `${value}`
@@ -132,7 +132,7 @@ const builtInFormatters: Record<string, SqlFormatter> = {
   },
 }
 
-type Result<T, E> = { success: true, data: T } | { success: false, error: E }
+export type Result<T, E> = { success: true, data: T } | { success: false, error: E, data?: T }
 
 interface SqlTranspilerOptions {
   tableName?: string,
@@ -152,14 +152,14 @@ export const createSqlTranspiler = ({ tableName, /*macros,*/ formatters = builtI
       return { success: false, error: new Error(`No formatter found for dialect: ${dialect}`) }
     }
     try {
-      const data = formatter.formatStatement({
+      const sqlStr = formatter.formatStatement({
         type: 'SELECT',
         list: '*',
         from: tableName,
         where: query.where,
         limit: query.limit,
       }, { formatter, fields })
-      return { success: true, data }
+      return { success: true, data: `${sqlStr};` }
     } catch (e) {
       return { success: false, error: (e instanceof Error) ? e : new Error('Unknown error') }
     }
