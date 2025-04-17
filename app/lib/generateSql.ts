@@ -17,7 +17,7 @@ interface SqlQuery {
 }
 
 type SqlStatement = {
-  verb: 'SELECT',
+  type: 'SELECT',
   list: string,
   from?: string,
   where?: SqlWhereClause,
@@ -36,18 +36,18 @@ interface SqlFormatterOptions {
   fields: Record<number, string>,
 }
 
-// TODO: Wrap nested conditions in parentheses
 const formatWhereClause = (where: SqlWhereClause, options: SqlFormatterOptions): string => {
   const { formatValue } = options.formatter
   switch (where[0]) {
-    // TODO: Clean up 'and' and 'or'
-    case 'and': {
-      const [, a, b] = where
-      return `${formatWhereClause(a, options)} AND ${formatWhereClause(b, options)}`
-    }
+    case 'and':
     case 'or': {
-      const [, a, b] = where
-      return `${formatWhereClause(a, options)} OR ${formatWhereClause(b, options)}`
+      const [, ...clauses] = where
+      const parts = clauses.map(c => {
+        const clauseStr = formatWhereClause(c, options)
+        const needsWrapped = ['and', 'or'].includes(c[0])
+        return !needsWrapped ? clauseStr : `(${clauseStr})`
+      })
+      return parts.join(` ${where[0].toUpperCase()} `)
     }
     // TODO: Implement
     case 'not': return `${formatWhereClause(where[1], options)}`
@@ -62,10 +62,14 @@ const formatWhereClause = (where: SqlWhereClause, options: SqlFormatterOptions):
       const [a, ...rest] = operands
       if (rest.length === 1) {
         const b = rest[0]
-        const sign = operator === '!=' ? '<>' : '='
+        let sign: string
+        if (b === null) {
+          sign = operator === '!=' ? 'IS NOT' : 'IS'
+        } else {
+          sign = operator === '!=' ? '<>' : '='
+        }
         return `${formatValue(a, options)} ${sign} ${formatValue(b, options)}`
       }
-      // TODO: Handle null value
       const sign = operator === '!=' ? 'NOT IN' : 'IN'
       return `${formatValue(a, options)} ${sign} (${rest.map(f => formatValue(f, options)).join(', ')})`
     }
@@ -77,7 +81,7 @@ const formatWhereClause = (where: SqlWhereClause, options: SqlFormatterOptions):
 
 const defaultFormatter: SqlFormatter = {
   formatStatement: (sql, options) => {
-    const parts: string[] = [sql.verb, sql.list]
+    const parts: string[] = [sql.type, sql.list]
     if (sql.from) parts.push(`FROM ${sql.from}`)
     if (sql.where) {
       parts.push(`WHERE ${formatWhereClause(sql.where, options)}`)
@@ -109,7 +113,7 @@ const builtInFormatters: Record<string, SqlFormatter> = {
   sqlserver: {
     ...defaultFormatter,
     formatStatement: (sql, options) => {
-      const parts: string[] = [sql.verb]
+      const parts: string[] = [sql.type]
       if (sql.limit) parts.push(`TOP ${sql.limit}`)
       parts.push(sql.list)
       if (sql.from) parts.push(`FROM ${sql.from}`)
@@ -149,7 +153,7 @@ export const createSqlTranspiler = ({ tableName, /*macros,*/ formatters = builtI
     }
     try {
       const data = formatter.formatStatement({
-        verb: 'SELECT',
+        type: 'SELECT',
         list: '*',
         from: tableName,
         where: query.where,
