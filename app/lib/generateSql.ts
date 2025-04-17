@@ -3,13 +3,14 @@ type SqlField = ['field', number]
 
 type SqlValue<T = number | string | null> = SqlField | T
 
-type SqlWhereClause =
+export type SqlWhereClause =
   | SqlField
   | ['and' | 'or', SqlWhereClause, SqlWhereClause]
   | ['not', SqlWhereClause]
   | ['<' | '>', SqlValue<number>, SqlValue<number>]
   | ['=' | '!=', SqlValue, SqlValue, ...SqlValue[]]
   | ['is-empty' | 'not-empty', SqlValue]
+  | ['macro', string]
 
 interface SqlQuery {
   limit?: number,
@@ -26,35 +27,42 @@ type SqlStatement = {
 }/* | ...other statement types (e.g. "insert") */
 
 interface SqlFormatter {
-  formatStatement: (sql: SqlStatement, options: SqlFormatterOptions) => string,
+  formatStatement: (sql: SqlStatement, meta: SqlFormatterMetadata) => string,
   formatColumn: (columnName: string) => string,
-  formatValue: (value: SqlValue, options: SqlFormatterOptions) => string,
+  formatValue: (value: SqlValue, meta: SqlFormatterMetadata) => string,
 }
 
-interface SqlFormatterOptions {
+interface SqlFormatterMetadata {
   formatter: SqlFormatter,
   fields: Record<number, string>,
+  macros: Record<string, SqlWhereClause>,
+  visited: SqlWhereClause[],
 }
 
-const formatWhereClause = (where: SqlWhereClause, options: SqlFormatterOptions): string => {
-  const { formatValue } = options.formatter
+const formatWhereClause = (where: SqlWhereClause, meta: SqlFormatterMetadata): string => {
+  if (meta.visited.includes(where)) {
+    throw new Error('Circular dependency detected')
+  }
+  meta = { ...meta, visited: [...meta.visited, where] }
+
+  const { formatValue } = meta.formatter
   switch (where[0]) {
     case 'and':
     case 'or': {
       const [, ...clauses] = where
       const parts = clauses.map(c => {
-        const clauseStr = formatWhereClause(c, options)
+        const clauseStr = formatWhereClause(c, meta)
         const needsWrapped = ['and', 'or'].includes(c[0])
         return !needsWrapped ? clauseStr : `(${clauseStr})`
       })
       return parts.join(` ${where[0].toUpperCase()} `)
     }
     // TODO: Implement
-    case 'not': return `${formatWhereClause(where[1], options)}`
+    case 'not': return `${formatWhereClause(where[1], meta)}`
     case '<':
     case '>': {
       const [sign, a, b] = where
-      return `${formatValue(a, options)} ${sign} ${formatValue(b, options)}`
+      return `${formatValue(a, meta)} ${sign} ${formatValue(b, meta)}`
     }
     case '=':
     case '!=': {
@@ -68,23 +76,30 @@ const formatWhereClause = (where: SqlWhereClause, options: SqlFormatterOptions):
         } else {
           sign = operator === '!=' ? '<>' : '='
         }
-        return `${formatValue(a, options)} ${sign} ${formatValue(b, options)}`
+        return `${formatValue(a, meta)} ${sign} ${formatValue(b, meta)}`
       }
       const sign = operator === '!=' ? 'NOT IN' : 'IN'
-      return `${formatValue(a, options)} ${sign} (${rest.map(f => formatValue(f, options)).join(', ')})`
+      return `${formatValue(a, meta)} ${sign} (${rest.map(f => formatValue(f, meta)).join(', ')})`
     }
-    case 'is-empty': return `${formatValue(where[1], options)} IS NULL`
-    case 'not-empty': return `${formatValue(where[1], options)} IS NOT NULL`
-    case 'field': return formatValue(where, options)
+    case 'is-empty': return `${formatValue(where[1], meta)} IS NULL`
+    case 'not-empty': return `${formatValue(where[1], meta)} IS NOT NULL`
+    case 'field': return formatValue(where, meta)
+    case 'macro': {
+      const macro = meta.macros[where[1]]
+      if (!macro) {
+        throw new Error(`Macro not found: ${where[1]}`)
+      }
+      return formatWhereClause(macro, meta)
+    }
   }
 }
 
 const defaultFormatter: SqlFormatter = {
-  formatStatement: (sql, options) => {
+  formatStatement: (sql, meta) => {
     const parts: string[] = [sql.type, sql.list]
     if (sql.from) parts.push(`FROM ${sql.from}`)
     if (sql.where) {
-      parts.push(`WHERE ${formatWhereClause(sql.where, options)}`)
+      parts.push(`WHERE ${formatWhereClause(sql.where, meta)}`)
     }
     if (sql.limit) parts.push(`LIMIT ${sql.limit}`)
     return parts.join(' ')
@@ -112,13 +127,13 @@ const defaultFormatter: SqlFormatter = {
 const builtInFormatters: Record<string, SqlFormatter> = {
   sqlserver: {
     ...defaultFormatter,
-    formatStatement: (sql, options) => {
+    formatStatement: (sql, meta) => {
       const parts: string[] = [sql.type]
       if (sql.limit) parts.push(`TOP ${sql.limit}`)
       parts.push(sql.list)
       if (sql.from) parts.push(`FROM ${sql.from}`)
       if (sql.where) {
-        parts.push(`WHERE ${formatWhereClause(sql.where, options)}`)
+        parts.push(`WHERE ${formatWhereClause(sql.where, meta)}`)
       }
       return parts.join(' ')
     },
@@ -132,15 +147,15 @@ const builtInFormatters: Record<string, SqlFormatter> = {
   },
 }
 
-export type Result<T, E> = { success: true, data: T } | { success: false, error: E, data?: T }
+export type Result<T, E> = { success: true, error?: undefined, data: T } | { success: false, error: E, data?: T }
 
 interface SqlTranspilerOptions {
   tableName?: string,
-  macros?: unknown,
+  macros?: Record<string, SqlWhereClause>,
   formatters?: Record<string, SqlFormatter>,
 }
 
-export const createSqlTranspiler = ({ tableName, /*macros,*/ formatters = builtInFormatters }: SqlTranspilerOptions) => {
+export const createSqlTranspiler = ({ tableName, macros = {}, formatters = builtInFormatters }: SqlTranspilerOptions) => {
 
   const generateSql = (
     dialect: string,
@@ -158,7 +173,7 @@ export const createSqlTranspiler = ({ tableName, /*macros,*/ formatters = builtI
         from: tableName,
         where: query.where,
         limit: query.limit,
-      }, { formatter, fields })
+      }, { formatter, fields, macros, visited: [] })
       return { success: true, data: `${sqlStr};` }
     } catch (e) {
       return { success: false, error: (e instanceof Error) ? e : new Error('Unknown error') }
