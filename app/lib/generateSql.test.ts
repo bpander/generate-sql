@@ -9,7 +9,7 @@ const fields = {
 }
 
 test('handles the cases from the prompt: https://gist.github.com/perivamsi/1cbea6e3874ba5638cd58202d7dcb1f7', () => {
-  const { generateSql } = createSqlTranspiler({ tableName: 'data' })
+  const { generateSql } = createSqlTranspiler()
   const cases: [Result<string, Error>, string][] = [
     [
       generateSql('postgres', fields, { 'where': ['=', ['field', 3], null] }),
@@ -61,14 +61,14 @@ test('handles the cases from the prompt: https://gist.github.com/perivamsi/1cbea
 })
 
 test('handles NOT', () => {
-  const { generateSql } = createSqlTranspiler({ tableName: 'data' })
+  const { generateSql } = createSqlTranspiler()
   const result = generateSql('postgres', fields, { 'where': ['not', ['>', ['field', 4], 35]] })
   expect(result.success).toBe(true)
   expect(result.data).toBe('SELECT * FROM data WHERE NOT ("age" > 35);')
 })
 
 test('handles invalid fields', () => {
-  const { generateSql } = createSqlTranspiler({ tableName: 'data' })
+  const { generateSql } = createSqlTranspiler()
   const result = generateSql('postgres', fields, { 'where': ['>', ['field', 999], 35] })
   expect(result.success).toBe(false)
   expect(result.error?.message).toBe('Unknown field number: 999')
@@ -77,7 +77,6 @@ test('handles invalid fields', () => {
 describe('macros', () => {
   test('supports macros', () => {
     const { generateSql } = createSqlTranspiler<['macro', 'is_joe']>({
-      tableName: 'data',
       macros: { 'is_joe': ['=', ['field', 2], 'joe'] },
     })
     const result = generateSql('postgres', fields, { where: ['and', ['<', ['field', 1], 5], ['macro', 'is_joe']] })
@@ -87,7 +86,6 @@ describe('macros', () => {
 
   test('supports nested macros', () => {
     const { generateSql } = createSqlTranspiler<['macro', 'is_joe' | 'is_adult' | 'is_adult_joe']>({
-      tableName: 'data',
       macros: {
         'is_joe': ['=', ['field', 2], 'joe'],
         'is_adult': ['>', ['field', 4], 18],
@@ -100,7 +98,7 @@ describe('macros', () => {
   })
 
   test('handles invalid macros', () => {
-    const { generateSql } = createSqlTranspiler({ tableName: 'data' })
+    const { generateSql } = createSqlTranspiler()
     const result = generateSql('postgres', fields, { where: ['and', ['<', ['field', 1], 5], ['macro', 'is_adult_joe' as never]] })
     expect(result.success).toBe(false)
     expect(result.error?.message).toBe('Macro not found: is_adult_joe')
@@ -109,7 +107,6 @@ describe('macros', () => {
 
 test('returns an error when the where clause contains a circular dependency', () => {
   const { generateSql } = createSqlTranspiler<['macro', 'is_decent' | 'is_good']>({
-    tableName: 'data',
     macros: {
       'is_good': ['and', ['macro', 'is_decent'], ['>', ['field', 4], 18]],
       'is_decent': ['and', ['macro', 'is_good'], ['<', ['field', 5], 5]],
@@ -131,7 +128,6 @@ test('returns an error when the where clause contains a circular dependency', ()
   expect(result.success).toBe(false)
   expect(result.error?.message).toBe('Circular dependency detected')
 })
-
 
 test('allows custom types, formatting, and dialects', () => {
   type Extras =
@@ -171,7 +167,6 @@ test('allows custom types, formatting, and dialects', () => {
     },
   }
   const { generateSql } = createSqlTranspiler<Extras>({
-    tableName: 'important_dates',
     formatters: {
       postgres: postgresWithExtras,
       emojiSql,
@@ -188,10 +183,10 @@ test('allows custom types, formatting, and dialects', () => {
   })
   expect(result.success).toBe(true)
   expect(result.data).toBe(
-    `SELECT * FROM important_dates WHERE "date_joined" < '${d.toISOString()}' AND "name" ILIKE 'A%';`,
+    `SELECT * FROM data WHERE "date_joined" < '${d.toISOString()}' AND "name" ILIKE 'A%';`,
   )
 
   result = generateSql('emojiSql', fields, { limit: 10 })
   expect(result.success).toBe(true)
-  expect(result.data).toBe('☝️ ⭐ ➡️ important_dates 🛑 10;')
+  expect(result.data).toBe('☝️ ⭐ ➡️ data 🛑 10;')
 })

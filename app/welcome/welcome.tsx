@@ -10,7 +10,7 @@ const fields = {
 
 export function Welcome() {
   useEffect(() => {
-    const { generateSql } = createSqlTranspiler({ tableName: 'data' })
+    const { generateSql } = createSqlTranspiler()
     const sql = generateSql('postgres', fields, {
       where: [
         'and', ['!=', ['field', 3], null],

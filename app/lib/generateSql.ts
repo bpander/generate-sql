@@ -15,11 +15,6 @@ export type SqlOperator<TExtra extends BaseOperator> =
   | ['macro', never]
   | TExtra
 
-interface SqlQuery<TExtra extends BaseOperator> {
-  limit?: number,
-  where?: SqlOperator<TExtra>,
-}
-
 type SqlStatement<TExtra extends BaseOperator> = {
   type: 'SELECT',
   list: string,
@@ -43,7 +38,7 @@ interface SqlFormatterMetadata<TExtra extends BaseOperator> {
   visited: SqlOperator<TExtra>[],
 }
 
-const defaultFormatOperator = (where: SqlOperator<never>, meta: SqlFormatterMetadata<never>): string => {
+const formatOperatorDefault = (where: SqlOperator<never>, meta: SqlFormatterMetadata<never>): string => {
   if (meta.visited.includes(where)) {
     throw new Error('Circular dependency detected')
   }
@@ -132,7 +127,7 @@ const defaultFormatter: SqlFormatter<never> = {
     }
     return 'NULL'
   },
-  formatOperator: defaultFormatOperator,
+  formatOperator: formatOperatorDefault,
 }
 
 export const builtInFormatters = {
@@ -162,14 +157,18 @@ export type Result<T, E> =
   | { success: true, error?: undefined, data: T }
   | { success: false, error: E, data?: undefined }
 
+interface SqlQuery<TExtra extends BaseOperator> {
+  limit?: number,
+  where?: SqlOperator<TExtra>,
+}
+  
 interface SqlTranspilerOptions<TExtra extends BaseOperator> {
-  tableName?: string,
   macros?: Record<string, SqlOperator<TExtra>>,
   formatters?: Record<string, SqlFormatter<TExtra>>,
 }
 
-export const createSqlTranspiler = <TExtra extends BaseOperator = never>(options: SqlTranspilerOptions<TExtra>) => {
-  const { tableName, macros = {} } = options
+export const createSqlTranspiler = <TExtra extends BaseOperator = never>(options: SqlTranspilerOptions<TExtra> = {}) => {
+  const { macros = {} } = options
   const formatters = (options.formatters || builtInFormatters) as Record<string, SqlFormatter<TExtra>>
 
   return {
@@ -182,7 +181,7 @@ export const createSqlTranspiler = <TExtra extends BaseOperator = never>(options
         const sqlStr = formatter.formatStatement({
           type: 'SELECT',
           list: '*',
-          from: tableName,
+          from: 'data',
           where: query.where,
           limit: query.limit,
         }, { formatter, fields, macros, visited: [] })
