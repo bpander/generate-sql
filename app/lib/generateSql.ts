@@ -1,58 +1,61 @@
 
 type SqlField = ['field', number]
 
-type SqlValue<T = number | string | null> = SqlField | T
+export type SqlValue<T = number | string | null> = SqlField | T
 
-export type SqlWhereClause =
+type BaseOperator = [string, ...unknown[]]
+
+export type SqlOperator<TExtra extends BaseOperator> =
   | SqlField
-  | ['and' | 'or', SqlWhereClause, SqlWhereClause]
-  | ['not', SqlWhereClause]
+  | ['and' | 'or', SqlOperator<TExtra>, SqlOperator<TExtra>]
+  | ['not', SqlOperator<TExtra>]
   | ['<' | '>', SqlValue<number>, SqlValue<number>]
   | ['=' | '!=', SqlValue, SqlValue, ...SqlValue[]]
   | ['is-empty' | 'not-empty', SqlValue]
-  | ['macro', string]
+  | ['macro', never]
+  | TExtra
 
-interface SqlQuery {
+interface SqlQuery<TExtra extends BaseOperator> {
   limit?: number,
-  where?: SqlWhereClause,
+  where?: SqlOperator<TExtra>,
 }
 
-type SqlStatement = {
+type SqlStatement<TExtra extends BaseOperator> = {
   type: 'SELECT',
   list: string,
   from?: string,
-  where?: SqlWhereClause,
+  where?: SqlOperator<TExtra>,
   limit?: number,
   // ...other clause types (e.g. "group by")
 }/* | ...other statement types (e.g. "insert") */
 
-interface SqlFormatter {
-  formatStatement: (sql: SqlStatement, meta: SqlFormatterMetadata) => string,
+export interface SqlFormatter<TExtra extends BaseOperator> {
+  formatStatement: (sql: SqlStatement<TExtra>, meta: SqlFormatterMetadata<TExtra>) => string,
   formatColumn: (columnName: string) => string,
-  formatValue: (value: SqlValue, meta: SqlFormatterMetadata) => string,
-  formatNot: (where: SqlWhereClause, meta: SqlFormatterMetadata) => string,
+  formatValue: (value: SqlValue, meta: SqlFormatterMetadata<TExtra>) => string,
+  formatOperator: (where: SqlOperator<TExtra>, meta: SqlFormatterMetadata<TExtra>) => string,
 }
 
-interface SqlFormatterMetadata {
-  formatter: SqlFormatter,
+interface SqlFormatterMetadata<TExtra extends BaseOperator> {
+  formatter: SqlFormatter<TExtra>,
   fields: Record<number, string>,
-  macros: Record<string, SqlWhereClause>,
-  visited: SqlWhereClause[],
+  macros: Record<string, SqlOperator<TExtra>>,
+  visited: SqlOperator<TExtra>[],
 }
 
-const formatWhereClause = (where: SqlWhereClause, meta: SqlFormatterMetadata): string => {
+const defaultFormatOperator = (where: SqlOperator<never>, meta: SqlFormatterMetadata<never>): string => {
   if (meta.visited.includes(where)) {
     throw new Error('Circular dependency detected')
   }
   meta = { ...meta, visited: [...meta.visited, where] }
 
-  const { formatValue } = meta.formatter
+  const { formatValue, formatOperator } = meta.formatter
   switch (where[0]) {
     case 'and':
     case 'or': {
       const [, ...clauses] = where
       const parts = clauses.map(c => {
-        const clauseStr = formatWhereClause(c, meta)
+        const clauseStr = formatOperator(c, meta)
         const needsWrapped = ['and', 'or'].includes(c[0])
         return !needsWrapped ? clauseStr : `(${clauseStr})`
       })
@@ -60,7 +63,7 @@ const formatWhereClause = (where: SqlWhereClause, meta: SqlFormatterMetadata): s
     }
 
     case 'not':
-      return meta.formatter.formatNot(where[1], meta)
+      return `NOT (${formatOperator(where[1], meta)})`
 
     case '<':
     case '>': {
@@ -70,20 +73,20 @@ const formatWhereClause = (where: SqlWhereClause, meta: SqlFormatterMetadata): s
 
     case '=':
     case '!=': {
-      const [operator, ...operands] = where
+      const [sign, ...operands] = where
       const [a, ...rest] = operands
+      let signSql: string
       if (rest.length === 1) {
         const b = rest[0]
-        let sign: string
         if (b === null) {
-          sign = operator === '!=' ? 'IS NOT' : 'IS'
+          signSql = sign === '!=' ? 'IS NOT' : 'IS'
         } else {
-          sign = operator === '!=' ? '<>' : '='
+          signSql = sign === '!=' ? '<>' : '='
         }
-        return `${formatValue(a, meta)} ${sign} ${formatValue(b, meta)}`
+        return `${formatValue(a, meta)} ${signSql} ${formatValue(b, meta)}`
       }
-      const sign = operator === '!=' ? 'NOT IN' : 'IN'
-      return `${formatValue(a, meta)} ${sign} (${rest.map(f => formatValue(f, meta)).join(', ')})`
+      signSql = sign === '!=' ? 'NOT IN' : 'IN'
+      return `${formatValue(a, meta)} ${signSql} (${rest.map(f => formatValue(f, meta)).join(', ')})`
     }
 
     case 'is-empty': return `${formatValue(where[1], meta)} IS NULL`
@@ -96,17 +99,17 @@ const formatWhereClause = (where: SqlWhereClause, meta: SqlFormatterMetadata): s
       if (!macro) {
         throw new Error(`Macro not found: ${where[1]}`)
       }
-      return formatWhereClause(macro, meta)
+      return formatOperator(macro, meta)
     }
   }
 }
 
-const defaultFormatter: SqlFormatter = {
+const defaultFormatter: SqlFormatter<never> = {
   formatStatement: (sql, meta) => {
     const parts: string[] = [sql.type, sql.list]
     if (sql.from) parts.push(`FROM ${sql.from}`)
     if (sql.where) {
-      parts.push(`WHERE ${formatWhereClause(sql.where, meta)}`)
+      parts.push(`WHERE ${meta.formatter.formatOperator(sql.where, meta)}`)
     }
     if (sql.limit) parts.push(`LIMIT ${sql.limit}`)
     return parts.join(' ')
@@ -129,12 +132,10 @@ const defaultFormatter: SqlFormatter = {
     }
     return 'NULL'
   },
-  formatNot: (where, meta) => {
-    return `NOT (${formatWhereClause(where, meta)})`
-  },
+  formatOperator: defaultFormatOperator,
 }
 
-const builtInFormatters: Record<string, SqlFormatter> = {
+export const builtInFormatters = {
   sqlserver: {
     ...defaultFormatter,
     formatStatement: (sql, meta) => {
@@ -143,7 +144,7 @@ const builtInFormatters: Record<string, SqlFormatter> = {
       parts.push(sql.list)
       if (sql.from) parts.push(`FROM ${sql.from}`)
       if (sql.where) {
-        parts.push(`WHERE ${formatWhereClause(sql.where, meta)}`)
+        parts.push(`WHERE ${meta.formatter.formatOperator(sql.where, meta)}`)
       }
       return parts.join(' ')
     },
@@ -155,44 +156,40 @@ const builtInFormatters: Record<string, SqlFormatter> = {
     ...defaultFormatter,
     formatColumn: name => `\`${name}\``,
   },
-}
+} satisfies Record<string, SqlFormatter<never>>
 
 export type Result<T, E> =
   | { success: true, error?: undefined, data: T }
   | { success: false, error: E, data?: undefined }
 
-interface SqlTranspilerOptions {
+interface SqlTranspilerOptions<TExtra extends BaseOperator> {
   tableName?: string,
-  macros?: Record<string, SqlWhereClause>,
-  formatters?: Record<string, SqlFormatter>,
+  macros?: Record<string, SqlOperator<TExtra>>,
+  formatters?: Record<string, SqlFormatter<TExtra>>,
 }
 
-export const createSqlTranspiler = ({ tableName, macros = {}, formatters = builtInFormatters }: SqlTranspilerOptions) => {
-
-  const generateSql = (
-    dialect: string,
-    fields: Record<number, string>,
-    query: SqlQuery,
-  ): Result<string, Error> => {
-    const formatter = formatters[dialect]
-    if (!formatter) {
-      return { success: false, error: new Error(`No formatter found for dialect: ${dialect}`) }
-    }
-    try {
-      const sqlStr = formatter.formatStatement({
-        type: 'SELECT',
-        list: '*',
-        from: tableName,
-        where: query.where,
-        limit: query.limit,
-      }, { formatter, fields, macros, visited: [] })
-      return { success: true, data: `${sqlStr};` }
-    } catch (e) {
-      return { success: false, error: (e instanceof Error) ? e : new Error('Unknown error') }
-    }
-  }
+export const createSqlTranspiler = <TExtra extends BaseOperator = never>(options: SqlTranspilerOptions<TExtra>) => {
+  const { tableName, macros = {} } = options
+  const formatters = (options.formatters || builtInFormatters) as Record<string, SqlFormatter<TExtra>>
 
   return {
-    generateSql,
+    generateSql: (dialect: string, fields: Record<number, string>, query: SqlQuery<TExtra>): Result<string, Error> => {
+      const formatter = formatters[dialect]
+      if (!formatter) {
+        return { success: false, error: new Error(`No formatter found for dialect: ${dialect}`) }
+      }
+      try {
+        const sqlStr = formatter.formatStatement({
+          type: 'SELECT',
+          list: '*',
+          from: tableName,
+          where: query.where,
+          limit: query.limit,
+        }, { formatter, fields, macros, visited: [] })
+        return { success: true, data: `${sqlStr};` }
+      } catch (e) {
+        return { success: false, error: (e instanceof Error) ? e : new Error('Unknown error') }
+      }
+    },
   }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { createSqlTranspiler, type Result, type SqlWhereClause } from './generateSql'
+import { builtInFormatters, createSqlTranspiler, type Result, type SqlFormatter, type SqlValue, type SqlOperator } from './generateSql'
 
 const fields = {
   1: 'id',
@@ -76,7 +76,7 @@ test('handles invalid fields', () => {
 
 describe('macros', () => {
   test('supports macros', () => {
-    const { generateSql } = createSqlTranspiler({
+    const { generateSql } = createSqlTranspiler<['macro', 'is_joe']>({
       tableName: 'data',
       macros: { 'is_joe': ['=', ['field', 2], 'joe'] },
     })
@@ -86,7 +86,7 @@ describe('macros', () => {
   })
 
   test('supports nested macros', () => {
-    const { generateSql } = createSqlTranspiler({
+    const { generateSql } = createSqlTranspiler<['macro', 'is_joe' | 'is_adult' | 'is_adult_joe']>({
       tableName: 'data',
       macros: {
         'is_joe': ['=', ['field', 2], 'joe'],
@@ -101,14 +101,14 @@ describe('macros', () => {
 
   test('handles invalid macros', () => {
     const { generateSql } = createSqlTranspiler({ tableName: 'data' })
-    const result = generateSql('postgres', fields, { where: ['and', ['<', ['field', 1], 5], ['macro', 'is_adult_joe']] })
+    const result = generateSql('postgres', fields, { where: ['and', ['<', ['field', 1], 5], ['macro', 'is_adult_joe' as never]] })
     expect(result.success).toBe(false)
     expect(result.error?.message).toBe('Macro not found: is_adult_joe')
   })
 })
 
 test('returns an error when the where clause contains a circular dependency', () => {
-  const { generateSql } = createSqlTranspiler({
+  const { generateSql } = createSqlTranspiler<['macro', 'is_decent' | 'is_good']>({
     tableName: 'data',
     macros: {
       'is_good': ['and', ['macro', 'is_decent'], ['>', ['field', 4], 18]],
@@ -120,14 +120,78 @@ test('returns an error when the where clause contains a circular dependency', ()
   expect(result.success).toBe(false)
   expect(result.error?.message).toBe('Circular dependency detected')
 
-  const reusedWhereClause: SqlWhereClause = ['field', 1]
+  const reusedWhereClause: SqlOperator<never> = ['field', 1]
   result = generateSql('postgres', fields, { where: ['and', reusedWhereClause, reusedWhereClause] })
   expect(result.success).toBe(true)
   expect(result.data).toBe('SELECT * FROM data WHERE "id" AND "id";')
 
-  const selfReferentialWhereClause: SqlWhereClause = ['and', reusedWhereClause, reusedWhereClause]
+  const selfReferentialWhereClause: SqlOperator<never> = ['and', reusedWhereClause, reusedWhereClause]
   selfReferentialWhereClause[1] = selfReferentialWhereClause
   result = generateSql('postgres', fields, { where: selfReferentialWhereClause })
   expect(result.success).toBe(false)
   expect(result.error?.message).toBe('Circular dependency detected')
+})
+
+
+test('allows custom types, formatting, and dialects', () => {
+  type Extras =
+    | ['<' | '>' | '=' | '!=', SqlValue<number | Date>, SqlValue<number | Date>]
+    | ['like' | 'ilike', SqlValue<string>, SqlValue<string>]
+  const postgresBase = builtInFormatters.postgres as unknown as SqlFormatter<Extras>
+  const postgresWithExtras: SqlFormatter<Extras> = {
+    ...postgresBase,
+    formatOperator: (where, meta) => {
+      const { formatValue } = meta.formatter
+      switch (where[0]) {
+        case 'ilike':
+        case 'like':
+          return `${formatValue(where[1], meta)} ${where[0].toUpperCase()} ${formatValue(where[2], meta)}`
+      }
+      return postgresBase.formatOperator(where, meta)
+    },
+    formatValue: (value, meta) => {
+      if (value instanceof Date) {
+        // NOTE: This is just meant to show that you COULD add dialect-specific date formatting;
+        // this example wouldn't actually return dates in postgres's datetime format.
+        return meta.formatter.formatValue(value.toISOString(), meta)
+      }
+      return postgresBase.formatValue(value, meta)
+    },
+  }
+  const emojiSql: SqlFormatter<Extras> = {
+    ...postgresBase,
+    formatStatement: (sql, meta) => {
+      const parts: string[] = ['☝️ ⭐']
+      if (sql.from) parts.push(`➡️ ${sql.from}`)
+      if (sql.where) {
+        parts.push(`🔍 ${meta.formatter.formatOperator(sql.where, meta)}`)
+      }
+      if (sql.limit) parts.push(`🛑 ${sql.limit}`)
+      return parts.join(' ')
+    },
+  }
+  const { generateSql } = createSqlTranspiler<Extras>({
+    tableName: 'important_dates',
+    formatters: {
+      postgres: postgresWithExtras,
+      emojiSql,
+    },
+  })
+  const d = new Date()
+  let result: Result<string, Error>
+  result = generateSql('postgres', fields, {
+    where: [
+      'and',
+      ['<', ['field', 3], d],
+      ['ilike', ['field', 2], 'A%'],
+    ],
+  })
+  expect(result.success).toBe(true)
+  expect(result.data).toBe(
+    `SELECT * FROM important_dates WHERE "date_joined" < '${d.toISOString()}' AND "name" ILIKE 'A%';`,
+  )
+
+  result = generateSql('emojiSql', fields, { limit: 10 })
+  expect(result.success).toBe(true)
+  expect(result.data).toBe('☝️ ⭐ ➡️ important_dates 🛑 10;')
 })
